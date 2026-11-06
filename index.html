@@ -1,0 +1,229 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#080f1c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Business HQ">
+<title>Business HQ</title>
+<style>
+:root{font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif;color:#fff;background:#080f1c}
+*{box-sizing:border-box}
+body{margin:0;padding:20px 16px 100px;background:linear-gradient(145deg,#080f1c,#14233a);min-height:100vh}
+header{text-align:center;padding:20px 0}
+.logo{display:inline-grid;place-items:center;width:100px;height:100px;border-radius:24px;background:linear-gradient(145deg,#050a12,#17243a);border:2px solid #e8b94e;color:#f7d678;font:bold 48px Georgia,serif;box-shadow:0 0 30px #d8a93d44}
+h1{font-size:27px;margin:16px 0 4px}
+.sub{color:#aab8c9;font-size:13px}
+.card{background:#14243a;border:1px solid #30435a;border-radius:18px;padding:18px;margin:14px 0}
+h2{font-size:19px;margin:0 0 12px}
+label{display:block;color:#c6d1dd;font-size:13px;margin-top:12px}
+input,select,textarea{width:100%;background:#0b1728;color:white;border:1px solid #40516a;border-radius:10px;padding:13px;margin-top:5px;font-size:16px}
+button{background:#172c45;color:white;border:1px solid #4c5d73;border-radius:12px;padding:13px;font-size:14px;cursor:pointer}
+button.gold{background:linear-gradient(120deg,#fff0a4,#d49a26);color:#10131a;border:0;font-weight:bold}
+button:disabled{opacity:.5}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.actions button{flex:1}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.tile{text-align:center;padding:24px 8px;background:#14243a;border:1px solid #30435a;border-radius:16px}
+.tile strong{display:block;color:#f7d678;font-size:30px}
+.tile span{font-size:13px}
+.small{font-size:12px;color:#aab8c9;overflow-wrap:anywhere}
+.error{color:#ff9797;white-space:pre-wrap}
+.success{color:#8fe0a8}
+.hidden{display:none}
+nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:#0a1424;border-top:1px solid #30435a;padding:10px 8px max(12px,env(safe-area-inset-bottom))}
+nav button{flex:1;border:0;background:transparent;font-size:12px}
+nav button.active{color:#f7d678}
+</style>
+</head>
+<body>
+<header>
+<div class="logo">HQ</div>
+<h1>Business HQ</h1>
+<div class="sub">Business Operations Command Center</div>
+</header>
+<main id="app"></main>
+<nav id="nav" class="hidden"></nav>
+<script>
+"use strict";
+const $=s=>document.querySelector(s);
+const escapeHTML=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let url=localStorage.getItem("hq_url")||"";
+let key=localStorage.getItem("hq_key")||"";
+let session=null,business="wb",tab="home";
+let tasks=[],approvals=[],members=[];
+let message="";
+const names={wb:"Working Bones Outfitters",fb:"Funny Bones Kids"};
+function validKey(k){
+if(k.startsWith("sb_publishable_"))return true;
+try{
+let p=k.split(".");
+if(p.length!==3)return false;
+let d=JSON.parse(atob(p[1].replace(/-/g,"+").replace(/_/g,"/")));
+return d.role==="anon";
+}catch{return false}
+}
+async function api(path,method="GET",body=null,anonymous=false){
+const headers={"apikey":key,"Content-Type":"application/json"};
+if(session&&!anonymous)headers.Authorization="Bearer "+session.access_token;
+let response=await fetch(url+path,{method,headers,body:body===null?undefined:JSON.stringify(body)});
+let data=await response.json().catch(()=>null);
+return{ok:response.ok,status:response.status,data};
+}
+async function rpc(name,args){
+return api("/rest/v1/rpc/"+name,"POST",args);
+}
+function show(text){message=text;render()}
+function setup(){
+return `<section class="card"><h2>Connect Supabase</h2>
+<p class="small">Enter your project URL and publishable key. Never enter a secret or service-role key.</p>
+<label>Project URL<input id="url" value="${escapeHTML(url)}" placeholder="https://your-project.supabase.co"></label>
+<label>Publishable key<input id="key" value="${escapeHTML(key)}" placeholder="sb_publishable_..."></label>
+<div class="actions"><button class="gold" onclick="saveConfig()">Connect</button></div></section>`;
+}
+function saveConfig(){
+let u=$("#url").value.trim().replace(/\/$/,"");
+let k=$("#key").value.trim();
+if(!/^https:\/\/[a-z0-9-]+\.supabase\.co$/.test(u)||!validKey(k)){
+show("Enter a valid Supabase project URL and publishable/anon key.");return;
+}
+url=u;key=k;
+localStorage.setItem("hq_url",url);
+localStorage.setItem("hq_key",key);
+show("");
+}
+function loginPage(){
+return `<section class="card"><h2>Secure Sign In</h2>
+<label>Email<input id="email" type="email" autocomplete="username"></label>
+<label>Password<input id="password" type="password" autocomplete="current-password"></label>
+<div class="actions"><button class="gold" onclick="login()">Sign In</button></div>
+<p class="small">Use your Supabase account. Safari may offer Face ID password autofill.</p></section>`;
+}
+async function login(){
+try{
+const r=await api("/auth/v1/token?grant_type=password","POST",{
+email:$("#email").value.trim(),password:$("#password").value
+},true);
+if(!r.ok){show("Sign in failed: "+(r.data?.msg||r.data?.error_description||r.status));return}
+session=r.data;
+message="";
+await load();
+}catch(e){show("Connection error: "+e.message)}
+}
+async function load(){
+if(!session)return;
+try{
+const results=await Promise.all([
+api("/rest/v1/tasks?select=*&order=created_at.desc&limit=200"),
+api("/rest/v1/approvals?select=*&decision=eq.pending"),
+api("/rest/v1/memberships?select=business,role")
+]);
+if(results.some(r=>r.status===401)){
+const refreshed=await api("/auth/v1/token?grant_type=refresh_token","POST",{
+refresh_token:session.refresh_token
+},true);
+if(refreshed.ok){session=refreshed.data;return load()}
+session=null;show("Session expired. Please sign in again.");return;
+}
+if(!results[0].ok){show("Could not load tasks: "+results[0].status);return}
+tasks=results[0].data||[];
+approvals=results[1].ok?results[1].data||[]:[];
+members=results[2].ok?results[2].data||[]:[];
+if(!members.some(m=>m.business===business))business=members[0]?.business||"";
+render();
+}catch(e){show("Connection error: "+e.message)}
+}
+function isOwner(){
+return members.some(m=>m.business===business&&m.role==="owner");
+}
+function businessPicker(){
+return `<section class="card"><label>Select Business</label>
+<select onchange="business=this.value;render()">
+${members.map(m=>`<option value="${escapeHTML(m.business)}" ${m.business===business?"selected":""}>${escapeHTML(names[m.business]||m.business)}</option>`).join("")}
+</select></section>`;
+}
+function home(){
+const mine=tasks.filter(t=>t.business===business);
+const pending=approvals.filter(a=>a.business===business);
+return businessPicker()+`<div class="grid">
+<div class="tile"><strong>${mine.length}</strong><span>Total Tasks</span></div>
+<div class="tile"><strong>${pending.length}</strong><span>Approvals</span></div>
+<div class="tile"><strong>${mine.filter(t=>t.status==="done").length}</strong><span>Completed</span></div>
+<div class="tile"><strong>${mine.filter(t=>t.status==="failed").length}</strong><span>Failed</span></div>
+</div>
+<section class="card"><h2>Business Control Center</h2>
+<p class="small">Review tasks, approve consequential actions, and monitor your business operations.</p>
+<div class="actions"><button class="gold" onclick="switchTab('tasks')">View Tasks</button>
+<button onclick="switchTab('approvals')">Approvals</button></div></section>`;
+}
+function taskPage(){
+return businessPicker()+`<h2>Tasks</h2>`+
+tasks.filter(t=>t.business===business).map(t=>`<section class="card">
+<strong>${escapeHTML(t.title)}</strong>
+<p class="small">${escapeHTML(t.worker)} · ${escapeHTML(t.status)} · ${escapeHTML(t.action)}</p>
+<p class="small">Estimated cost: $${escapeHTML(t.est_cost)}</p>
+${isOwner()&&["queued","awaiting_approval","approved"].includes(t.status)?`<button onclick="cancelTask('${t.id}')">Cancel Task</button>`:""}
+</section>`).join("")+
+`<section class="card"><p class="small">Task creation will be added after the connection and approval tests.</p></section>`;
+}
+async function cancelTask(id){
+if(!confirm("Cancel this task?"))return;
+const r=await rpc("cancel_task",{p_task:id});
+if(!r.ok){show("Cancel failed: "+(r.data?.message||r.status));return}
+await load();
+}
+function approvalPage(){
+const list=approvals.filter(a=>a.business===business);
+return businessPicker()+`<h2>Pending Approvals</h2>`+
+(list.length?list.map(a=>{
+const t=tasks.find(t=>t.id===a.task_id);
+return `<section class="card">
+<strong>${escapeHTML(t?.title||a.action)}</strong>
+<p class="small">${escapeHTML(a.kind)} / ${escapeHTML(a.action)}</p>
+<p class="small">Exact payload: ${escapeHTML(JSON.stringify(t?.payload||{}))}</p>
+<p class="small">Estimated cost: $${escapeHTML(a.est_cost)}</p>
+<p class="small">Expires: ${escapeHTML(a.expires_at)}</p>
+${a.kind==="deletion"?`<label>Type DELETE ${a.id.slice(0,8)}<input id="confirm_${a.id}"></label>`:""}
+<div class="actions">
+<button class="gold" onclick="decide('${a.id}','approved')">Approve</button>
+<button onclick="decide('${a.id}','rejected')">Reject</button>
+</div></section>`;
+}).join(""):`<section class="card">No approvals waiting.</section>`);
+}
+async function decide(id,decision){
+if(!isOwner())return show("Owner access required.");
+const a=approvals.find(x=>x.id===id);
+if(!a)return;
+if(!confirm("Confirm "+decision+" for "+a.action+"?"))return;
+const phrase=a.kind==="deletion"?document.getElementById("confirm_"+id)?.value.trim():null;
+const r=await rpc("decide_approval",{p_id:id,p_decision:decision,p_confirm:phrase});
+if(!r.ok){show("Approval error: "+(r.data?.message||r.status));return}
+await load();
+}
+function accountPage(){
+return `<section class="card"><h2>Account</h2>
+<p class="small">Connected to your Supabase project.</p>
+<div class="actions">
+<button onclick="logout()">Sign Out</button>
+<button onclick="changeProject()">Change Project</button>
+</div></section>`;
+}
+function logout(){session=null;tasks=[];approvals=[];members=[];render()}
+function changeProject(){logout();url="";key="";localStorage.removeItem("hq_url");localStorage.removeItem("hq_key");render()}
+function switchTab(t){tab=t;render()}
+function render(){
+const app=$("#app"),nav=$("#nav");
+if(!url||!key){nav.classList.add("hidden");app.innerHTML=setup();return}
+if(!session){nav.classList.add("hidden");app.innerHTML=loginPage()+`<p class="error">${escapeHTML(message)}</p>`;return}
+nav.classList.remove("hidden");
+nav.innerHTML=[["home","Home"],["tasks","Tasks"],["approvals","Approvals"],["account","Account"]]
+.map(([id,label])=>`<button class="${tab===id?"active":""}" onclick="switchTab('${id}')">${label}</button>`).join("");
+app.innerHTML=({home, tasks:taskPage,approvals:approvalPage,account:accountPage}[tab]||home)()+
+`<p class="error">${escapeHTML(message)}</p>`;
+}
+render();
+</script>
+</body>
+</html>
